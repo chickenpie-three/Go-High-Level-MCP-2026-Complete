@@ -5,23 +5,22 @@
  *   GET  /tools   — all tool definitions in Anthropic input_schema format
  *   POST /execute — execute a named tool by { name, arguments }
  *
- * These sit alongside (not replacing) the existing MCP protocol endpoints
- * (/mcp, /sse) and the /tools/call REST endpoint.
+ * Per-request GHL credentials (multi-tenant):
+ *   Pass x-ghl-access-token + x-ghl-location-id headers to use a specific
+ *   GHL account instead of the server's default env credentials.
  */
 
 import type { Application } from 'express';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { MCPAppsManager } from './apps/index.js';
+import type { GHLConfig } from './types/ghl-types.js';
+import { EnhancedGHLClient } from './enhanced-ghl-client.js';
+import { ToolRegistry as ToolRegistryClass } from './tool-registry.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Convert an MCP SDK Tool (camelCase inputSchema) to Anthropic format
- * (snake_case input_schema) expected by CRESyncFlow-v2's mcp-tools-bridge.ts.
- */
 function toAnthropicTool(tool: Tool) {
-  // MCP SDK uses inputSchema; fall back gracefully if field name varies
   const schema: Record<string, unknown> =
     (tool as any).inputSchema ?? (tool as any).input_schema ?? {};
 
@@ -38,28 +37,17 @@ function toAnthropicTool(tool: Tool) {
 
 // ── Route Registration ────────────────────────────────────────────────────────
 
-/**
- * Register the CRESyncFlow bridge routes on the given Express app.
- *
- * Must be called:
- *   1. After `app.use(express.json())` is applied
- *   2. Before `app.listen()` is called
- *
- * Replaces the original `app.get('/tools', ...)` handler — call this INSTEAD
- * of registering a separate /tools GET handler in main.ts.
- */
 export function registerExecuteRoutes(
   app: Application,
-  registry: ToolRegistry,
+  defaultRegistry: ToolRegistry,
   appsManager: MCPAppsManager,
-  appTools: Tool[]
+  appTools: Tool[],
+  baseConfig?: GHLConfig
 ): void {
-  // ── GET /tools — Anthropic-compatible tool catalogue ────────────────────
-  // Returns { tools: AnthropicTool[], count: number }
-  // The bridge caches this for 60 s so it is inexpensive in steady state.
+  // ── GET /tools ────────────────────────────────────────────────────────────
   app.get('/tools', (_req, res) => {
     try {
-      const allDefs = registry.getAllToolDefinitions(appTools);
+      const allDefs = defaultRegistry.getAllToolDefinitions(appTools);
       const anthropicTools = allDefs.map(toAnthropicTool);
       res.json({ tools: anthropicTools, count: anthropicTools.length });
     } catch (err: any) {
@@ -68,9 +56,10 @@ export function registerExecuteRoutes(
     }
   });
 
-  // ── POST /execute — execute a named tool ─────────────────────────────────
-  // Body: { name: string, arguments?: Record<string, unknown> }
-  // Returns: { result } on success, { error } on failure (HTTP 4xx/5xx)
+  // ── POST /execute ─────────────────────────────────────────────────────────
+  // Supports per-request GHL credentials via headers:
+  //   x-ghl-access-token — user's GHL API key / OAuth token
+  //   x-ghl-location-id  — user's GHL location/sub-account ID
   app.post('/execute', async (req, res) => {
     const body = req.body ?? {};
     const toolName: string | undefined = body.name;
@@ -81,22 +70,36 @@ export function registerExecuteRoutes(
       return;
     }
 
+    // Use per-request credentials if provided
+    const perReqToken = req.headers['x-ghl-access-token'] as string | undefined;
+    const perReqLoc   = req.headers['x-ghl-location-id']  as string | undefined;
+
+    let registry = defaultRegistry;
+    if (perReqToken && perReqLoc && baseConfig) {
+      const perReqConfig: GHLConfig = {
+        ...baseConfig,
+        accessToken: perReqToken,
+        locationId:  perReqLoc,
+      };
+      const perReqClient = new EnhancedGHLClient(perReqConfig);
+      registry = new ToolRegistryClass(perReqClient) as unknown as ToolRegistry;
+    }
+
     try {
-      // 1. Try GHL registry tools first
+      // 1. Try GHL registry tools
       const registryResult = await registry.callTool(toolName, toolArgs);
       if (registryResult !== undefined) {
         res.json({ result: registryResult });
         return;
       }
 
-      // 2. Try MCP App tools
+      // 2. MCP App tools (always default)
       if (appsManager.isAppTool(toolName)) {
         const appResult = await appsManager.executeTool(toolName, toolArgs);
         res.json({ result: appResult });
         return;
       }
 
-      // 3. Unknown tool
       res.status(404).json({ error: `Unknown tool: ${toolName}` });
     } catch (err: any) {
       console.error(`[execute-route] POST /execute tool=${toolName} error:`, err.message);

@@ -375,7 +375,7 @@ async function main() {
 
   // Bridge routes: GET /tools (Anthropic format) + POST /execute
   // These are consumed by CRESyncFlow-v2's mcp-tools-bridge.ts.
-  registerExecuteRoutes(app, registry, appsManager, appTools);
+  registerExecuteRoutes(app, registry, appsManager, appTools, config);
 
   app.post('/tools/call', async (req, res) => {
     const { name, arguments: args } = req.body;
