@@ -5,17 +5,12 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["dist/**"]
+        "includeFiles": ["dist/**"],
+        "maxLambdaSize": "50mb"
       }
     }
   ],
   "routes": [
     { "src": "/(.*)", "dest": "/api/index.js" }
-  ],
-  "functions": {
-    "api/index.js": {
-      "maxDuration": 60,
-      "memory": 1024
-    }
-  }
+  ]
 }
