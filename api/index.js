@@ -14,9 +14,8 @@ let loadError = null;
 try {
   ({ EnhancedGHLClient } = require('../dist/enhanced-ghl-client.js'));
   ({ ToolRegistry } = require('../dist/tool-registry.js'));
-  ({ Server } = require('@modelcontextprotocol/sdk/server/index.js'));
+  ({ McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js'));
   ({ StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js'));
-  ({ CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } = require('@modelcontextprotocol/sdk/types.js'));
 } catch (err) {
   loadError = err.message + ' | ' + err.stack?.split('\n').slice(0, 3).join(' ');
 }
@@ -44,45 +43,16 @@ app.get('/', (_req, res) => {
 });
 
 function createMCPServer(ghlClient) {
-  const server = new Server(
+  const mcpServer = new McpServer(
     { name: 'ghl-mcp-server', version: '2.0.0' },
     { capabilities: { tools: {} } },
   );
 
   const registry = new ToolRegistry(ghlClient);
-  const tools = registry.getTools();
+  const toolCount = registry.registerAll(mcpServer);
+  console.log(`Registered ${toolCount} GHL tools`);
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map(t => ({
-      name: t.name,
-      description: t.description || '',
-      inputSchema: t.inputSchema || { type: 'object', properties: {} },
-      annotations: t.annotations,
-    })),
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    const tool = tools.find(t => t.name === name);
-    if (!tool) {
-      throw new McpError(ErrorCode.MethodNotFound, `Tool not found: ${name}`);
-    }
-    try {
-      const result = await tool.execute(args || {});
-      return {
-        content: Array.isArray(result?.content)
-          ? result.content
-          : [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: 'text', text: `Error: ${err.message}` }],
-        isError: true,
-      };
-    }
-  });
-
-  return server;
+  return mcpServer.server; // Return the underlying Server for transport connection
 }
 
 // MCP endpoint — Streamable HTTP
