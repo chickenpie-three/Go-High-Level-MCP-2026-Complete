@@ -120,9 +120,13 @@ app.all('/mcp', async (req, res) => {
 
     res.on('close', () => { server.close().catch(() => {}); });
   } catch (err) {
-    console.error('MCP error:', err.message);
+    console.error('MCP error:', err.message, err.stack);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal server error' });
+      res.status(500).json({
+        error: 'Internal server error',
+        message: err.message,
+        stack: err.stack?.split('\n').slice(0, 5),
+      });
     }
   }
 });
