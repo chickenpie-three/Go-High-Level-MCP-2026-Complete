@@ -7,11 +7,19 @@
 
 const express = require('express');
 const cors = require('cors');
-const { EnhancedGHLClient } = require('../dist/enhanced-ghl-client.js');
-const { ToolRegistry } = require('../dist/tool-registry.js');
-const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
-const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
-const { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } = require('@modelcontextprotocol/sdk/types.js');
+
+let EnhancedGHLClient, ToolRegistry, Server, StreamableHTTPServerTransport, CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError;
+let loadError = null;
+
+try {
+  ({ EnhancedGHLClient } = require('../dist/enhanced-ghl-client.js'));
+  ({ ToolRegistry } = require('../dist/tool-registry.js'));
+  ({ Server } = require('@modelcontextprotocol/sdk/server/index.js'));
+  ({ StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js'));
+  ({ CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } = require('@modelcontextprotocol/sdk/types.js'));
+} catch (err) {
+  loadError = err.message + ' | ' + err.stack?.split('\n').slice(0, 3).join(' ');
+}
 
 const app = express();
 app.use(cors({
@@ -24,13 +32,14 @@ app.use(express.json({ limit: '1mb' }));
 // Health check
 app.get('/', (_req, res) => {
   res.json({
-    status: 'healthy',
+    status: loadError ? 'error' : 'healthy',
     server: 'ghl-mcp-server',
     version: '2.0.0-vercel',
     protocol: '2024-11-05',
     transport: 'Streamable HTTP at /mcp',
     multiTenant: true,
-    auth: 'Pass x-ghl-access-token and x-ghl-location-id headers',
+    loadError: loadError || undefined,
+    modulesLoaded: !loadError,
   });
 });
 
@@ -78,6 +87,9 @@ function createMCPServer(ghlClient) {
 
 // MCP endpoint — Streamable HTTP
 app.all('/mcp', async (req, res) => {
+  if (loadError) {
+    return res.status(500).json({ error: 'Module load failed', details: loadError });
+  }
   try {
     const accessToken = req.headers['x-ghl-access-token']
       || (req.headers['authorization'] || '').replace('Bearer ', '')
